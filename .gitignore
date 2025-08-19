@@ -2,3 +2,6 @@
 vendor/
 xdebug/*
 .phpunit.result.cache
+
+# Build ZIPs
+cloudflare-wordpress-*.zip

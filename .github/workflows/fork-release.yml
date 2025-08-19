@@ -1,0 +1,88 @@
+name: Fork Release
+on:
+    release:
+        types: [published]
+    # Alternativamente, você pode usar push em tags para automatizar ainda mais:
+    # push:
+    #     tags:
+    #         - 'v*'
+
+jobs:
+    build-and-release:
+        name: Build and Release ZIP
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: '8.3'
+                  extensions: json, mbstring
+                  coverage: none
+
+            - name: Get Composer Cache Directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+            - name: Cache Composer dependencies
+              uses: actions/cache@v3
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+                  restore-keys: ${{ runner.os }}-composer-
+
+            - name: Install Composer dependencies
+              run: composer install --no-dev --optimize-autoloader --no-progress --no-interaction
+
+            - name: Remove unsupported PHP 8 symfony/polyfill return types
+              uses: jacobtomlinson/gha-find-replace@v2
+              with:
+                  find: ": string|false"
+                  replace: " "
+                  include: "**/symfony/polyfill-intl-{idn,normalizer}/bootstrap80.php"
+                  regex: false
+
+            - name: Create plugin ZIP
+              run: |
+                  # Criar diretório temporário para o plugin
+                  mkdir -p /tmp/cloudflare-wordpress
+                  
+                  # Copiar arquivos necessários (excluindo arquivos de desenvolvimento)
+                  rsync -av --progress . /tmp/cloudflare-wordpress/ \
+                      --exclude='.git*' \
+                      --exclude='node_modules' \
+                      --exclude='tests' \
+                      --exclude='*.md' \
+                      --exclude='phpcs.xml' \
+                      --exclude='phpunit.xml' \
+                      --exclude='composer.json' \
+                      --exclude='composer.lock' \
+                      --exclude='docker-compose.yaml' \
+                      --exclude='Dockerfile.*' \
+                      --exclude='scripts/' \
+                      --exclude='xdebug/' \
+                      --exclude='.github/'
+                  
+                  # Criar o ZIP
+                  cd /tmp
+                  zip -r cloudflare-wordpress.zip cloudflare-wordpress/
+                  mv cloudflare-wordpress.zip $GITHUB_WORKSPACE/
+
+            - name: Upload ZIP to Release
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                  upload_url: ${{ github.event.release.upload_url }}
+                  asset_path: ./cloudflare-wordpress.zip
+                  asset_name: cloudflare-wordpress-${{ github.event.release.tag_name }}.zip
+                  asset_content_type: application/zip
+
+            - name: Upload ZIP as Artifact (backup)
+              uses: actions/upload-artifact@v3
+              with:
+                  name: cloudflare-wordpress-${{ github.event.release.tag_name }}
+                  path: ./cloudflare-wordpress.zip
+                  retention-days: 90

@@ -1,0 +1,92 @@
+name: Manual Build ZIP
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: 'Version tag (e.g., v4.12.8)'
+                required: true
+                default: 'v4.12.8'
+            include_dev_files:
+                description: 'Include development files (tests, docs, etc.)'
+                type: boolean
+                required: false
+                default: false
+    push:
+        tags:
+            - 'v*'
+
+jobs:
+    build-zip:
+        name: Build Plugin ZIP
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: '8.3'
+                  extensions: json, mbstring
+                  coverage: none
+
+            - name: Get version
+              id: version
+              run: |
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                      echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+                  else
+                      echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Install Composer dependencies
+              run: composer install --no-dev --optimize-autoloader --no-progress --no-interaction
+
+            - name: Remove unsupported PHP 8 symfony/polyfill return types
+              uses: jacobtomlinson/gha-find-replace@v2
+              with:
+                  find: ": string|false"
+                  replace: " "
+                  include: "**/symfony/polyfill-intl-{idn,normalizer}/bootstrap80.php"
+                  regex: false
+
+            - name: Prepare plugin files
+              run: |
+                  # Criar diretório temporário
+                  mkdir -p /tmp/cloudflare
+                  
+                  # Lista de arquivos/pastas a excluir (sempre)
+                  EXCLUDE_ALWAYS="--exclude=.git* --exclude=node_modules --exclude=phpcs.xml --exclude=phpunit.xml --exclude=docker-compose.yaml --exclude=Dockerfile.* --exclude=scripts/ --exclude=xdebug/ --exclude=.github/"
+                  
+                  # Lista adicional para versão de produção
+                  EXCLUDE_PROD="--exclude=*.md --exclude=composer.json --exclude=composer.lock --exclude=src/Test/ --exclude=docs/"
+                  
+                  if [ "${{ github.event.inputs.include_dev_files }}" = "true" ]; then
+                      echo "Building with development files..."
+                      rsync -av --progress . /tmp/cloudflare/ $EXCLUDE_ALWAYS
+                  else
+                      echo "Building production version..."
+                      rsync -av --progress . /tmp/cloudflare/ $EXCLUDE_ALWAYS $EXCLUDE_PROD
+                  fi
+
+            - name: Create ZIP
+              run: |
+                  cd /tmp
+                  zip -r cloudflare-wordpress-${{ steps.version.outputs.version }}.zip cloudflare/
+                  mv cloudflare-wordpress-${{ steps.version.outputs.version }}.zip $GITHUB_WORKSPACE/
+
+            - name: Upload Artifact
+              uses: actions/upload-artifact@v3
+              with:
+                  name: cloudflare-wordpress-${{ steps.version.outputs.version }}
+                  path: ./cloudflare-wordpress-${{ steps.version.outputs.version }}.zip
+                  retention-days: 90
+
+            - name: Create Release (if triggered by tag)
+              if: startsWith(github.ref, 'refs/tags/')
+              uses: softprops/action-gh-release@v1
+              with:
+                  files: ./cloudflare-wordpress-${{ steps.version.outputs.version }}.zip
+                  generate_release_notes: true
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
